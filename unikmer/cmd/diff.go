@@ -29,6 +29,8 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/shenwei356/intintmap"
+
 	"github.com/shenwei356/unikmer"
 	"github.com/spf13/cobra"
 )
@@ -70,7 +72,8 @@ Tips:
 
 		runtime.GOMAXPROCS(threads)
 
-		m := make(map[uint64]bool, mapInitSize)
+		// m := make(map[uint64]bool, mapInitSize)
+		m := intintmap.New(mapInitSize, 0.4)
 
 		var infh *bufio.Reader
 		var r *os.File
@@ -213,16 +216,17 @@ Tips:
 				checkError(err)
 			}
 
-			m[kcode.Code] = false
+			// m[kcode.Code] = false
+			m.Put(int64(kcode.Code), 10)
 		}
 
 		r.Close()
 
 		if opt.Verbose {
-			log.Infof("%d Kmers loaded", len(m))
+			log.Infof("%d Kmers loaded", m.Size())
 		}
 
-		if len(m) == 0 {
+		if m.Size() == 0 {
 			if opt.Verbose {
 				log.Infof("export Kmers")
 			}
@@ -289,7 +293,8 @@ Tips:
 		chFile := make(chan iFile, threads)
 		doneSendFile := make(chan int)
 
-		maps := make(map[int]map[uint64]bool, threads)
+		// maps := make(map[int]map[uint64]bool, threads)
+		maps := make(map[int]*intintmap.Map, threads)
 		maps[0] = m
 
 		// clone maps
@@ -300,9 +305,11 @@ Tips:
 		for i := 1; i < opt.NumCPUs; i++ {
 			wg.Add(1)
 			go func(i int) {
-				m1 := make(map[uint64]bool, len(m))
-				for k := range m {
-					m1[k] = false
+				// m1 := make(map[uint64]bool, m.Size())
+				m1 := intintmap.New(m.Size(), 0.4)
+				for k := range m.Keys() {
+					// m1[k] = false
+					m1.Put(k, 10)
 				}
 				wg.Done()
 				maps[i] = m1
@@ -322,7 +329,7 @@ Tips:
 			go func(i int) {
 				defer func() {
 					if opt.Verbose {
-						log.Infof("worker %02d: finished with %d Kmers", i, len(maps[i]))
+						log.Infof("worker %02d: finished with %d Kmers", i, maps[i].Size())
 					}
 					wgWorkers.Done()
 				}()
@@ -331,14 +338,13 @@ Tips:
 					log.Infof("worker %02d: started", i)
 				}
 
-				var code uint64
 				var ifile iFile
 				var file string
 				var infh *bufio.Reader
 				var r *os.File
 				var reader *unikmer.Reader
 				var kcode unikmer.KmerCode
-				var ok, mark bool
+				var ok bool
 				m1 := maps[i]
 				for {
 					ifile, ok = <-chFile
@@ -381,24 +387,36 @@ Tips:
 						}
 
 						// mark seen kmer
-						if _, ok = m1[kcode.Code]; ok { // slowest part
-							m1[kcode.Code] = true
-						}
+						// if _, ok = m1[kcode.Code]; ok { // slowest part
+						// 	m1[kcode.Code] = true
+						// }
+
+						// if _, ok = m1.Get(int64(kcode.Code)); ok {
+						// 	m1.Put(int64(kcode.Code), 20)
+						// }
+
+						m1.UpdateExistedKey(int64(kcode.Code), 20)
+
 					}
 
 					r.Close()
 
 					// remove seen kmers
-					for code, mark = range m1 {
-						if mark {
-							delete(m1, code)
+					// for code, mark = range m1 {
+					// 	if mark {
+					// 		delete(m1, code)
+					// 	}
+					// }
+					for kv := range m1.Items() {
+						if kv[1] > 10 {
+							m1.Del(kv[0])
 						}
 					}
 
 					if opt.Verbose {
-						log.Infof("worker %02d: finish processing file (%d/%d): %s, %d Kmers remain", i, ifile.i+1, nfiles, file, len(m1))
+						log.Infof("worker %02d: finish processing file (%d/%d): %s, %d Kmers remain", i, ifile.i+1, nfiles, file, m1.Size())
 					}
-					if len(m1) == 0 {
+					if m1.Size() == 0 {
 						hasDiff = false
 						toStop <- 1
 						return
@@ -432,16 +450,17 @@ Tips:
 		toStop <- 1
 		<-doneDone
 
-		var m0 map[uint64]bool
+		// var m0 map[uint64]bool
+		var m0 *intintmap.Map
 		if !hasDiff {
 			if opt.Verbose {
 				log.Infof("no set difference found")
 			}
 			// return
 		} else {
-			var code uint64
+			var code int64
 			for _, m := range maps {
-				if len(m) == 0 {
+				if m.Size() == 0 {
 					m0 = m
 					break
 				}
@@ -450,18 +469,18 @@ Tips:
 					m0 = m
 					continue
 				}
-				for code = range m0 {
-					if _, ok = m[code]; !ok { // it's already been deleted in other m
-						delete(m0, code) // so it should be deleted
+				for code = range m0.Keys() {
+					if _, ok = m.Get(code); !ok { // it's already been deleted in other m
+						m0.Del(code) // so it should be deleted
 					}
 				}
 
-				if len(m0) == 0 {
+				if m0.Size() == 0 {
 					break
 				}
 			}
 
-			if len(m0) == 0 {
+			if m0.Size() == 0 {
 				if opt.Verbose {
 					log.Warningf("no set difference found")
 				}
@@ -505,18 +524,18 @@ Tips:
 		checkError(err)
 
 		if sortKmers {
-			writer.Number = int64(len(m0))
+			writer.Number = int64(m0.Size())
 		}
 
-		if len(m0) == 0 {
+		if m0.Size() == 0 {
 			writer.Number = 0
 			checkError(writer.WriteHeader())
 		} else {
 			if sortKmers {
-				codes := make([]uint64, len(m0))
+				codes := make([]uint64, m0.Size())
 				i := 0
-				for code := range m0 {
-					codes[i] = code
+				for code := range m0.Keys() {
+					codes[i] = uint64(code)
 					i++
 				}
 				if opt.Verbose {
@@ -530,14 +549,15 @@ Tips:
 					writer.Write(unikmer.KmerCode{Code: code, K: k})
 				}
 			} else {
-				for code := range m0 {
-					writer.Write(unikmer.KmerCode{Code: code, K: k})
+				for code := range m0.Keys() {
+					writer.Write(unikmer.KmerCode{Code: uint64(code), K: k})
 				}
+
 			}
 		}
 		checkError(writer.Flush())
 		if opt.Verbose {
-			log.Infof("%d Kmers saved", len(m0))
+			log.Infof("%d Kmers saved", m0.Size())
 		}
 	},
 }
