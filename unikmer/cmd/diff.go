@@ -22,7 +22,9 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"runtime"
@@ -31,6 +33,7 @@ import (
 
 	"github.com/shenwei356/unikmer"
 	"github.com/spf13/cobra"
+	boom "github.com/tylertreat/BoomFilters"
 )
 
 // diffCmd represents
@@ -314,6 +317,15 @@ Tips:
 		}
 
 		// -----------------------------------------------------------------------
+		bf := boom.NewBloomFilter(uint(len(m)), 0.01)
+		bf.SetHash(fnv.New64a())
+		buf := make([]byte, 8)
+		be := binary.BigEndian
+		for code := range m {
+			be.PutUint64(buf, code)
+			bf.Add(buf)
+		}
+
 		hasDiff := true
 		var wgWorkers sync.WaitGroup
 		for i := 0; i < opt.NumCPUs; i++ { // workers
@@ -340,6 +352,8 @@ Tips:
 				var kcode unikmer.KmerCode
 				var ok bool
 				m1 := maps[i]
+				buf := make([]byte, 8)
+
 				for {
 					ifile, ok = <-chFile
 					if !ok {
@@ -382,9 +396,16 @@ Tips:
 
 						code = kcode.Code
 						// delete seen kmer
+
+						be.PutUint64(buf, code)
+						if !bf.Test(buf) {
+							continue
+						}
+
 						if _, ok = m1[code]; ok { // slowest part
 							delete(m1, code)
 						}
+
 					}
 
 					r.Close()
