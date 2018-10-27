@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 
 	gzip "github.com/klauspost/pgzip"
+	"github.com/pierrec/lz4"
 )
 
 func outStream(file string, gzipped bool) (*bufio.Writer, io.WriteCloser, *os.File, error) {
@@ -52,7 +53,9 @@ func outStream(file string, gzipped bool) (*bufio.Writer, io.WriteCloser, *os.Fi
 	}
 
 	if gzipped {
-		gw := gzip.NewWriter(w)
+		// gw := gzip.NewWriter(w)
+		gw := lz4.NewWriter(w)
+		gw.CompressionLevel = 6
 		return bufio.NewWriterSize(gw, os.Getpagesize()), gw, w, nil
 	}
 	return bufio.NewWriterSize(w, os.Getpagesize()), nil, w, nil
@@ -83,6 +86,9 @@ func inStream(file string) (*bufio.Reader, *os.File, bool, error) {
 		if err != nil {
 			return nil, r, gzipped, fmt.Errorf("fail to create gzip reader for %s: %s", file, err)
 		}
+		br = bufio.NewReaderSize(gr, os.Getpagesize())
+	} else {
+		gr := lz4.NewReader(br)
 		br = bufio.NewReaderSize(gr, os.Getpagesize())
 	}
 	return br, r, gzipped, nil
