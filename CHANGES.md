@@ -1,3 +1,5 @@
+# CHANGE HISTORY
+
 - v0.4.4
     - `unikmer diff`: fix concurrency bug when cloning kmers from first file.
 - v0.4.4
