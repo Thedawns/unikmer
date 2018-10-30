@@ -22,13 +22,14 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/binary"
 	"io"
 	"os"
 	"runtime"
 	"sort"
 	"sync"
 
-	"github.com/vmihailenco/msgpack"
+	"github.com/tylertreat/BoomFilters"
 
 	"github.com/shenwei356/unikmer"
 	"github.com/spf13/cobra"
@@ -356,6 +357,11 @@ Tips:
 				var r *os.File
 				var ok bool
 				m1 := maps[i]
+
+				ibf := boom.NewInverseBloomFilter(1000)
+				be := binary.BigEndian
+				buf := make([]byte, 8)
+
 				for {
 					ifile, ok = <-chFile
 					if !ok {
@@ -376,11 +382,12 @@ Tips:
 					infh, r, _, err = inStream(file)
 					checkError(err)
 
-					decoder := msgpack.NewDecoder(infh)
-					var m2 map[uint64]struct{}
-					decoder.Decode(&m2)
+					_, err = ibf.ReadFrom(infh)
+					checkError(err)
+
 					for code = range m1 {
-						if _, ok = m2[code]; ok {
+						be.PutUint64(buf, code)
+						if ibf.Test(buf) {
 							delete(m1, code)
 						}
 					}

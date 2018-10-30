@@ -22,12 +22,13 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
 
-	"github.com/vmihailenco/msgpack"
+	"github.com/tylertreat/BoomFilters"
 
 	"github.com/shenwei356/unikmer"
 	"github.com/spf13/cobra"
@@ -55,69 +56,46 @@ var dump2mapCmd = &cobra.Command{
 			files = getFileList(args)
 		}
 
-		checkFiles(files)
+		if len(files) > 1 {
+			checkError(fmt.Errorf("no more than one file should be given"))
+		}
 
-		m := make(map[uint64]struct{}, mapInitSize)
+		checkFiles(files)
 
 		var infh *bufio.Reader
 		var r *os.File
 		var reader *unikmer.Reader
 		var kcode unikmer.KmerCode
-		var k int = -1
-		var canonical bool
-		var flag int
-		var nfiles = len(files)
-		for i, file := range files {
-			if opt.Verbose {
-				log.Infof("process file (%d/%d): %s", i+1, nfiles, file)
+
+		file := files[0]
+
+		infh, r, _, err = inStream(file)
+		checkError(err)
+		defer r.Close()
+
+		reader, err = unikmer.NewReader(infh)
+		checkError(err)
+
+		if reader.Flag&unikmer.UNIK_SORTED == 0 {
+			checkError(fmt.Errorf("input .unik file should be sorted"))
+		}
+
+		ibf := boom.NewInverseBloomFilter(uint(float64(reader.Number) * 1.2))
+
+		// ibf.SetHash(fnv.New64a())
+		buf := make([]byte, 8)
+		be := binary.BigEndian
+		for {
+			kcode, err = reader.Read()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				checkError(err)
 			}
 
-			flag = func() int {
-				infh, r, _, err = inStream(file)
-				checkError(err)
-				defer r.Close()
-
-				reader, err = unikmer.NewReader(infh)
-				checkError(err)
-
-				if k == -1 {
-					k = reader.K
-					canonical = reader.Flag&unikmer.UNIK_CANONICAL > 0
-
-					var mode uint32
-					if opt.Compact {
-						mode |= unikmer.UNIK_COMPACT
-					}
-					if canonical {
-						mode |= unikmer.UNIK_CANONICAL
-					}
-
-				} else if k != reader.K {
-					checkError(fmt.Errorf("K (%d) of binary file '%s' not equal to previous K (%d)", reader.K, file, k))
-				} else if (reader.Flag&unikmer.UNIK_CANONICAL > 0) != canonical {
-					checkError(fmt.Errorf(`'canonical' flags not consistent, please check with "unikmer stats"`))
-				}
-
-				for {
-					kcode, err = reader.Read()
-					if err != nil {
-						if err == io.EOF {
-							break
-						}
-						checkError(err)
-					}
-
-					m[kcode.Code] = struct{}{}
-				}
-
-				return flagContinue
-			}()
-
-			if flag == flagReturn {
-				return
-			} else if flag == flagBreak {
-				break
-			}
+			be.PutUint64(buf, kcode.Code)
+			ibf.Add(buf)
 		}
 
 		outFile := getFlagString(cmd, "out-prefix")
@@ -135,8 +113,8 @@ var dump2mapCmd = &cobra.Command{
 			w.Close()
 		}()
 
-		encoder := msgpack.NewEncoder(outfh)
-		checkError(encoder.Encode(m))
+		_, err = ibf.WriteTo(outfh)
+		checkError(err)
 	},
 }
 
@@ -144,5 +122,4 @@ func init() {
 	RootCmd.AddCommand(dump2mapCmd)
 
 	dump2mapCmd.Flags().StringP("out-prefix", "o", "-", `out file prefix ("-" for stdout)`)
-
 }
