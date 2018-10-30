@@ -21,3 +21,5 @@
 package cmd
 
 const extDataFile = ".unik"
+
+const extMapDataFile = ".unikm"

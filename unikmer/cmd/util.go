@@ -156,6 +156,24 @@ func checkFiles(files []string) {
 	}
 }
 
+func checkFiles2(files []string, suffix string) {
+	for _, file := range files {
+		if isStdin(file) {
+			continue
+		}
+		ok, err := pathutil.Exists(file)
+		if err != nil {
+			checkError(fmt.Errorf("fail to read file %s: %s", file, err))
+		}
+		if !ok {
+			checkError(fmt.Errorf("file (linked file) does not exist: %s", file))
+		}
+		if !strings.HasSuffix(file, suffix) {
+			checkError(fmt.Errorf("input should be stdin or %s file: %s", suffix, file))
+		}
+	}
+}
+
 func sortUnikFile(opt Options, unique bool, file string, outFile string) (*unikmer.Header, int, error) {
 	// in
 	infh, r, _, err := inStream(file)
