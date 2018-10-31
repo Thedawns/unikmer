@@ -22,13 +22,14 @@ package cmd
 
 import (
 	"bufio"
-	"fmt"
+	"bytes"
 	"io"
 	"os"
 	"runtime"
 	"sort"
 	"sync"
 
+	"github.com/shenwei356/bio/seqio/fastx"
 	"github.com/shenwei356/unikmer"
 	"github.com/spf13/cobra"
 )
@@ -61,7 +62,7 @@ Tips:
 			files = getFileList(args)
 		}
 
-		checkFiles(files)
+		// checkFiles(files)
 
 		outFile := getFlagString(cmd, "out-prefix")
 		sortKmers := getFlagBool(cmd, "sort")
@@ -70,7 +71,7 @@ Tips:
 
 		runtime.GOMAXPROCS(threads)
 
-		m := make(map[uint64]struct{}, mapInitSize)
+		m := make(map[uint64][]byte, mapInitSize)
 
 		var infh *bufio.Reader
 		var r *os.File
@@ -213,7 +214,7 @@ Tips:
 				checkError(err)
 			}
 
-			m[kcode.Code] = struct{}{}
+			m[kcode.Code] = kcode.Bytes()
 		}
 
 		r.Close()
@@ -289,7 +290,7 @@ Tips:
 		chFile := make(chan iFile, threads)
 		doneSendFile := make(chan int)
 
-		maps := make(map[int]map[uint64]struct{}, threads)
+		maps := make(map[int]map[uint64][]byte, threads)
 		maps[0] = m
 
 		// clone maps
@@ -299,7 +300,7 @@ Tips:
 		var wg sync.WaitGroup
 		type iMap struct {
 			i int
-			m map[uint64]struct{}
+			m map[uint64][]byte
 		}
 		ch := make(chan iMap, threads)
 		doneClone := make(chan int)
@@ -312,9 +313,9 @@ Tips:
 		for i := 1; i < threads; i++ {
 			wg.Add(1)
 			go func(i int) {
-				m1 := make(map[uint64]struct{}, len(m))
+				m1 := make(map[uint64][]byte, len(m))
 				for k := range m {
-					m1[k] = struct{}{}
+					m1[k] = m[k]
 				}
 				ch <- iMap{i: i, m: m1}
 				wg.Done()
@@ -345,13 +346,12 @@ Tips:
 					log.Infof("worker %02d: started", i)
 				}
 
-				var code uint64
 				var ifile iFile
 				var file string
-				var infh *bufio.Reader
-				var r *os.File
-				var reader *unikmer.Reader
-				var kcode unikmer.KmerCode
+				var record *fastx.Record
+				var fastxReader *fastx.Reader
+				var code uint64
+				var codeBytes []byte
 				var ok bool
 				m1 := maps[i]
 				for {
@@ -371,37 +371,24 @@ Tips:
 						log.Infof("worker %02d:  start processing file (%d/%d): %s", i, ifile.i+1, nfiles, file)
 					}
 
-					infh, r, _, err = inStream(file)
+					fastxReader, err = fastx.NewDefaultReader(file)
 					checkError(err)
-
-					reader, err = unikmer.NewReader(infh)
-					checkError(err)
-
-					if k != reader.K {
-						checkError(fmt.Errorf("K (%d) of binary file '%s' not equal to previous K (%d)", reader.K, file, k))
-					}
-
-					if (reader.Flag&unikmer.UNIK_CANONICAL > 0) != canonical {
-						checkError(fmt.Errorf(`'canonical' flags not consistent, please check with "unikmer stats"`))
-					}
-
 					for {
-						kcode, err = reader.Read()
+						record, err = fastxReader.Read()
 						if err != nil {
 							if err == io.EOF {
 								break
 							}
 							checkError(err)
+							break
 						}
 
-						code = kcode.Code
-						// delete seen kmer
-						if _, ok = m1[code]; ok { // slowest part
-							delete(m1, code)
+						for code, codeBytes = range m1 {
+							if bytes.Index(record.Seq.Seq, codeBytes) >= 0 {
+								delete(m1, code)
+							}
 						}
 					}
-
-					r.Close()
 
 					if opt.Verbose {
 						log.Infof("worker %02d: finish processing file (%d/%d): %s, %d Kmers remain", i, ifile.i+1, nfiles, file, len(m1))
@@ -440,7 +427,7 @@ Tips:
 		toStop <- 1
 		<-doneDone
 
-		var m0 map[uint64]struct{}
+		var m0 map[uint64][]byte
 		if !hasDiff {
 			if opt.Verbose {
 				log.Infof("no set difference found")
